@@ -3,7 +3,6 @@ from firebase_admin import credentials, firestore, storage
 import streamlit as st
 import requests
 
-# আপনার দেওয়া Web API Key
 FIREBASE_WEB_API_KEY = "AIzaSyDYvXgT6RAfXAkKUvFqxmIrNYnS-EuIgAg"
 
 def init_firebase():
@@ -39,6 +38,16 @@ def upload_character_file(file_bytes, file_name):
         print(f"Storage error: {e}")
         return None
 
+def upload_item_file(file_bytes, file_name):
+    try:
+        bucket = storage.bucket()
+        blob = bucket.blob(f"items/{file_name}")
+        blob.upload_from_string(file_bytes)
+        return f"items/{file_name}"
+    except Exception as e:
+        print(f"Item upload error: {e}")
+        return None
+
 def add_character(name, description, file_path):
     try:
         doc_ref = db.collection('characters').document()
@@ -47,6 +56,23 @@ def add_character(name, description, file_path):
             'name': name,
             'description': description,
             'file_path': file_path
+        })
+        return True
+    except Exception as e:
+        return False
+
+def add_item(name, category, file_path, d_id, n_id, s_id, mesh_id):
+    try:
+        doc_ref = db.collection('items').document()
+        doc_ref.set({
+            'id': doc_ref.id,
+            'name': name,
+            'category': category,
+            'file_path': file_path,
+            'd_id': str(d_id).strip(),
+            'n_id': str(n_id).strip(),
+            's_id': str(s_id).strip(),
+            'mesh_id': str(mesh_id).strip()
         })
         return True
     except Exception as e:
@@ -61,3 +87,13 @@ def get_all_characters():
     except Exception:
         pass
     return chars
+
+def get_all_items():
+    items = []
+    try:
+        docs = db.collection('items').stream()
+        for doc in docs:
+            items.append(doc.to_dict())
+    except Exception:
+        pass
+    return items
