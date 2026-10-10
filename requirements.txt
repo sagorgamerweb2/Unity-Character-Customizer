@@ -1,3 +1,3 @@
 streamlit==1.40.0
 firebase-admin==6.5.0
-UnityPy==1.20.0
+UnityPy
