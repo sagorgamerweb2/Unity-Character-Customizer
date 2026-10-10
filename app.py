@@ -12,7 +12,7 @@ if "admin_logged_in" not in st.session_state:
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Go to:", ["Public Customizer", "Admin Panel"])
 
-# ==================== পাবলিক পেজ (PUBLIC CUSTOMIZER) ====================
+# ==================== পাবলিক পেজ ====================
 if page == "Public Customizer":
     st.title("🎮 Character Customizer")
     
@@ -26,7 +26,6 @@ if page == "Public Customizer":
         char_names = [c["name"] for c in characters]
         selected_char_name = st.selectbox("Select Character:", char_names)
         
-        # সিলেক্টেড ক্যারেক্টারের ডাটা বের করা
         selected_char = next(c for c in characters if c["name"] == selected_char_name)
         if selected_char.get("description"):
             st.caption(selected_char["description"])
@@ -34,7 +33,6 @@ if page == "Public Customizer":
         st.markdown("---")
         st.subheader("2. Customize Components (6 Categories)")
 
-        # ৬টি ক্যাটাগরি থেকে একটি করে আইটেম সিলেক্ট করা
         selected_items_for_job = {}
         for cat in CATEGORIES:
             cat_items = [itm for itm in all_items if itm.get("category") == cat]
@@ -51,13 +49,11 @@ if page == "Public Customizer":
                 st.warning("Please select at least one item to customize.")
             else:
                 with st.spinner("Downloading assets and building bundle... Please wait."):
-                    # ১. মূল ক্যারেক্টার বান্ডেল ডাউনলোড
                     base_bytes = firebase_helper.download_file_bytes(selected_char["file_path"])
                     
                     if not base_bytes:
-                        st.error("Failed to load base character file.")
+                        st.error("Failed to load base character file from storage.")
                     else:
-                        # ২. সিলেক্ট করা প্রতিটি আইটেমের ডাম্প ফাইল ডাউনলোড
                         items_to_apply = {}
                         has_error = False
                         
@@ -71,18 +67,14 @@ if page == "Public Customizer":
                                 break
                         
                         if not has_error:
-                            status_placeholder = st.empty()
-                            # ৩. প্রসেসিং ইঞ্জিন চালানো
                             success, result_bytes, logs = processing.process_character_bundle(
                                 base_bytes, items_to_apply
                             )
                             
-                            # লগ দেখানো
                             with st.expander("View Processing Logs", expanded=True):
                                 for l in logs:
                                     st.text(l)
                             
-                            # ৪. ডাউনলোড বাটন দেখানো
                             if success and result_bytes:
                                 st.success("🎉 AssetBundle created successfully!")
                                 out_filename = f"{selected_char_name}_Customized.bundle"
@@ -93,9 +85,9 @@ if page == "Public Customizer":
                                     mime="application/octet-stream"
                                 )
                             else:
-                                st.error("Bundle creation failed. Check the logs above.")
+                                st.error("Bundle creation failed. Check logs above.")
 
-# ==================== অ্যাডমিন প্যানেল (ADMIN PANEL) ====================
+# ==================== অ্যাডমিন প্যানেল ====================
 elif page == "Admin Panel":
     st.title("🔒 Admin Panel")
     
@@ -121,7 +113,6 @@ elif page == "Admin Panel":
         st.markdown("---")
         tab1, tab2 = st.tabs(["Manage Characters", "Manage Items"])
         
-        # ট্যাব ১: ক্যারেক্টার এবং তার ৬টি ক্যাটাগরির Base Path ID কনফিগারেশন
         with tab1:
             st.subheader("Add New Base Character")
             char_name = st.text_input("Character Name")
@@ -129,7 +120,6 @@ elif page == "Admin Panel":
             uploaded_char_file = st.file_uploader("Upload Base AssetBundle", key="char_uploader")
             
             st.markdown("##### Base Character Components Path IDs (6 Categories)")
-            st.caption("Enter the original Path IDs of this character's parts (Mesh and D, N, S textures).")
             
             components_config = {}
             for cat in CATEGORIES:
@@ -149,15 +139,17 @@ elif page == "Admin Panel":
                 if char_name and uploaded_char_file:
                     with st.spinner("Uploading character and saving configuration..."):
                         file_bytes = uploaded_char_file.read()
-                        file_path = firebase_helper.upload_character_file(file_bytes, uploaded_char_file.name)
+                        file_path, err = firebase_helper.upload_character_file(file_bytes, uploaded_char_file.name)
+                        
                         if file_path:
                             if firebase_helper.add_character(char_name, char_desc, file_path, components_config):
-                                st.success(f"Character '{char_name}' and component IDs saved successfully!")
+                                st.success(f"Character '{char_name}' saved successfully!")
                                 st.rerun()
                             else:
                                 st.error("Database save failed.")
                         else:
-                            st.error("Storage upload failed.")
+                            # এখানে আসল এররটি দেখা যাবে
+                            st.error(f"Storage upload failed! Error details: {err}")
                 else:
                     st.warning("Please provide character name and file.")
 
@@ -172,10 +164,9 @@ elif page == "Admin Panel":
             else:
                 st.info("No characters saved yet.")
 
-        # ট্যাব ২: আইটেম ম্যানেজমেন্ট
         with tab2:
             st.subheader("Add New Component Item")
-            item_name = st.text_input("Item Name (e.g., Red Jacket, Black Hair)")
+            item_name = st.text_input("Item Name")
             category = st.selectbox("Category", CATEGORIES)
             uploaded_item_file = st.file_uploader("Upload Item Import/Dump File", key="item_uploader")
             
@@ -192,7 +183,7 @@ elif page == "Admin Panel":
                 if item_name and uploaded_item_file:
                     with st.spinner("Uploading item and saving configuration..."):
                         file_bytes = uploaded_item_file.read()
-                        file_path = firebase_helper.upload_item_file(file_bytes, uploaded_item_file.name)
+                        file_path, err = firebase_helper.upload_item_file(file_bytes, uploaded_item_file.name)
                         if file_path:
                             if firebase_helper.add_item(item_name, category, file_path, d_id, n_id, s_id, mesh_id):
                                 st.success(f"Item '{item_name}' saved under '{category}' successfully!")
@@ -200,7 +191,7 @@ elif page == "Admin Panel":
                             else:
                                 st.error("Failed to save item.")
                         else:
-                            st.error("Failed to upload file.")
+                            st.error(f"Failed to upload file! Error details: {err}")
                 else:
                     st.warning("Please provide item name and file.")
             
