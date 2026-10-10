@@ -31,7 +31,7 @@ if page == "Public Customizer":
             st.caption(selected_char["description"])
 
         st.markdown("---")
-        st.subheader("2. Customize Components (6 Categories)")
+        st.subheader("2. Customize Components")
 
         selected_items_for_job = {}
         for cat in CATEGORIES:
@@ -48,44 +48,48 @@ if page == "Public Customizer":
             if not selected_items_for_job:
                 st.warning("Please select at least one item to customize.")
             else:
-                with st.spinner("Downloading assets and building bundle... Please wait."):
+                with st.spinner("Processing assets & textures... Please wait."):
                     base_bytes = firebase_helper.download_file_bytes(selected_char["file_path"])
                     
                     if not base_bytes:
-                        st.error("Failed to load base character file from storage.")
+                        st.error("Failed to load base character bundle.")
                     else:
                         items_to_apply = {}
                         has_error = False
                         
                         for cat, itm in selected_items_for_job.items():
-                            dump_bytes = firebase_helper.download_file_bytes(itm["file_path"])
-                            if dump_bytes:
-                                items_to_apply[cat] = {"data": itm, "dump_bytes": dump_bytes}
-                            else:
-                                st.error(f"Failed to fetch item file for: {itm['name']}")
-                                has_error = True
-                                break
+                            model_bytes = firebase_helper.download_file_bytes(itm.get("model_path"))
+                            tex_d_bytes = firebase_helper.download_file_bytes(itm.get("tex_d_path"))
+                            tex_n_bytes = firebase_helper.download_file_bytes(itm.get("tex_n_path"))
+                            tex_s_bytes = firebase_helper.download_file_bytes(itm.get("tex_s_path"))
+                            
+                            items_to_apply[cat] = {
+                                "data": itm,
+                                "model_bytes": model_bytes,
+                                "tex_d_bytes": tex_d_bytes,
+                                "tex_n_bytes": tex_n_bytes,
+                                "tex_s_bytes": tex_s_bytes
+                            }
                         
-                        if not has_error:
-                            success, result_bytes, logs = processing.process_character_bundle(
-                                base_bytes, items_to_apply
+                        success, result_bytes, logs = processing.process_character_bundle(
+                            base_bytes, selected_char, items_to_apply
+                        )
+                        
+                        with st.expander("View Processing Logs", expanded=True):
+                            for l in logs:
+                                st.text(l)
+                        
+                        if success and result_bytes:
+                            st.success("🎉 AssetBundle created successfully!")
+                            out_filename = f"{selected_char_name}_Customized.bundle"
+                            st.download_button(
+                                label=f"⬇️ Download {out_filename}",
+                                data=result_bytes,
+                                file_name=out_filename,
+                                mime="application/octet-stream"
                             )
-                            
-                            with st.expander("View Processing Logs", expanded=True):
-                                for l in logs:
-                                    st.text(l)
-                            
-                            if success and result_bytes:
-                                st.success("🎉 AssetBundle created successfully!")
-                                out_filename = f"{selected_char_name}_Customized.bundle"
-                                st.download_button(
-                                    label=f"⬇️ Download {out_filename}",
-                                    data=result_bytes,
-                                    file_name=out_filename,
-                                    mime="application/octet-stream"
-                                )
-                            else:
-                                st.error("Bundle creation failed. Check logs above.")
+                        else:
+                            st.error("Bundle creation failed. Check logs above.")
 
 # ==================== অ্যাডমিন প্যানেল ====================
 elif page == "Admin Panel":
@@ -113,17 +117,17 @@ elif page == "Admin Panel":
         st.markdown("---")
         tab1, tab2 = st.tabs(["Manage Characters", "Manage Items"])
         
+        # ট্যাব ১: ক্যারেক্টার অ্যাড
         with tab1:
             st.subheader("Add New Base Character")
             char_name = st.text_input("Character Name")
             char_desc = st.text_area("Character Description (Optional)")
             uploaded_char_file = st.file_uploader("Upload Base AssetBundle", key="char_uploader")
             
-            st.markdown("##### Base Character Components Path IDs (6 Categories)")
-            
+            st.markdown("##### Base Character Target Path IDs (6 Categories)")
             components_config = {}
             for cat in CATEGORIES:
-                with st.expander(f"⚙️ {cat} Component IDs"):
+                with st.expander(f"⚙️ {cat} Target IDs"):
                     c_col1, c_col2 = st.columns(2)
                     with c_col1:
                         m_id = st.text_input(f"{cat} Mesh Path ID", value="0", key=f"base_m_{cat}")
@@ -137,10 +141,9 @@ elif page == "Admin Panel":
 
             if st.button("Upload & Save Character"):
                 if char_name and uploaded_char_file:
-                    with st.spinner("Uploading character and saving configuration..."):
+                    with st.spinner("Saving character..."):
                         file_bytes = uploaded_char_file.read()
-                        file_path, err = firebase_helper.upload_character_file(file_bytes, uploaded_char_file.name)
-                        
+                        file_path, err = firebase_helper.save_file_direct(file_bytes, "characters", uploaded_char_file.name)
                         if file_path:
                             if firebase_helper.add_character(char_name, char_desc, file_path, components_config):
                                 st.success(f"Character '{char_name}' saved successfully!")
@@ -148,8 +151,7 @@ elif page == "Admin Panel":
                             else:
                                 st.error("Database save failed.")
                         else:
-                            # এখানে আসল এররটি দেখা যাবে
-                            st.error(f"Storage upload failed! Error details: {err}")
+                            st.error(f"Upload failed: {err}")
                 else:
                     st.warning("Please provide character name and file.")
 
@@ -159,47 +161,62 @@ elif page == "Admin Panel":
             if chars:
                 for c in chars:
                     with st.expander(f"👤 {c['name']}"):
-                        st.write(f"**Bundle Path:** `{c.get('file_path')}`")
                         st.json(c.get("components", {}))
             else:
                 st.info("No characters saved yet.")
 
+        # ট্যাব ২: সহজ আইটেম অ্যাড (ছবি ও মডেল আপলোড)
         with tab2:
             st.subheader("Add New Component Item")
-            item_name = st.text_input("Item Name")
-            category = st.selectbox("Category", CATEGORIES)
-            uploaded_item_file = st.file_uploader("Upload Item Import/Dump File", key="item_uploader")
+            item_name = st.text_input("Item Name (e.g., Cool Jacket, Punk Hair)")
+            category = st.selectbox("Select Category", CATEGORIES)
             
-            st.markdown("##### Item Path IDs Configuration")
-            col1, col2 = st.columns(2)
-            with col1:
-                d_id = st.text_input("Texture2D D Path ID", value="0")
-                n_id = st.text_input("Texture2D N Path ID", value="0")
-            with col2:
-                s_id = st.text_input("Texture2D S Path ID", value="0")
-                mesh_id = st.text_input("3D Mesh Path ID", value="0")
+            st.markdown("##### 📁 Upload 3D Model & Textures (No IDs needed!)")
+            up_model = st.file_uploader("1. Upload 3D Model / Mesh Dump File", key="item_model")
+            up_tex_d = st.file_uploader("2. Upload Texture D (Image from Gallery)", type=["png", "jpg", "jpeg"], key="item_d")
+            up_tex_n = st.file_uploader("3. Upload Texture N (Optional Image)", type=["png", "jpg", "jpeg"], key="item_n")
+            up_tex_s = st.file_uploader("4. Upload Texture S (Optional Image)", type=["png", "jpg", "jpeg"], key="item_s")
             
-            if st.button("Upload & Save Item"):
-                if item_name and uploaded_item_file:
-                    with st.spinner("Uploading item and saving configuration..."):
-                        file_bytes = uploaded_item_file.read()
-                        file_path, err = firebase_helper.upload_item_file(file_bytes, uploaded_item_file.name)
-                        if file_path:
-                            if firebase_helper.add_item(item_name, category, file_path, d_id, n_id, s_id, mesh_id):
-                                st.success(f"Item '{item_name}' saved under '{category}' successfully!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to save item.")
+            if st.button("Save Item"):
+                if item_name and (up_model or up_tex_d):
+                    with st.spinner("Saving item and textures..."):
+                        # মডেল সেভ
+                        model_path = None
+                        if up_model:
+                            model_path, _ = firebase_helper.save_file_direct(up_model.read(), "items", up_model.name)
+                        
+                        # টেক্সচার D সেভ
+                        tex_d_path = None
+                        if up_tex_d:
+                            tex_d_path, _ = firebase_helper.save_file_direct(up_tex_d.read(), "items", up_tex_d.name)
+
+                        # টেক্সচার N সেভ
+                        tex_n_path = None
+                        if up_tex_n:
+                            tex_n_path, _ = firebase_helper.save_file_direct(up_tex_n.read(), "items", up_tex_n.name)
+
+                        # টেক্সচার S সেভ
+                        tex_s_path = None
+                        if up_tex_s:
+                            tex_s_path, _ = firebase_helper.save_file_direct(up_tex_s.read(), "items", up_tex_s.name)
+
+                        # ডাটাবেসে তথ্য রাখা
+                        success = firebase_helper.add_item_files(
+                            item_name, category, model_path, tex_d_path, tex_n_path, tex_s_path
+                        )
+                        if success:
+                            st.success(f"Item '{item_name}' added under '{category}' successfully!")
+                            st.rerun()
                         else:
-                            st.error(f"Failed to upload file! Error details: {err}")
+                            st.error("Failed to save item.")
                 else:
-                    st.warning("Please provide item name and file.")
+                    st.warning("Please provide an item name and at least a model file or Texture D image.")
             
             st.markdown("---")
             st.subheader("Saved Items List")
             saved_items = firebase_helper.get_all_items()
             if saved_items:
                 for itm in saved_items:
-                    with st.expander(f"📦 {itm['name']} [{itm['category']}]"):
-                        st.write(f"**Mesh Path ID:** `{itm.get('mesh_id')}`")
-                        st.write(f"**Texture D ID:** `{itm.get('d_id')}` | **N ID:** `{itm.get('n_id')}` | **S ID:** `{itm.get('s_id')}`")
+                    st.write(f"• **{itm['name']}** [{itm['category']}]")
+            else:
+                st.info("No items added yet.")
