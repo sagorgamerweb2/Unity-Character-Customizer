@@ -28,18 +28,13 @@ def login_admin(email, password):
     except Exception as e:
         return {"error": str(e)}
 
-# ==================== ঝামেলামুক্ত ডাইরেক্ট ফাইল স্টোরেজ ====================
+# ডাটাবেসে ডাইরেক্ট সেভ (কোনো বাকেটের ঝামেলা ছাড়া)
 def save_file_direct(file_bytes, folder_name, file_name):
-    """
-    কোনো ক্লাউড বাকেট ছাড়াই সরাসরি ডাটাবেসে ফাইল সেভ করে।
-    ১-৩ এমবি ফাইলের জন্য এটি ১০০% নিখুঁত এবং ফেইল করার কোনো সুযোগ নেই।
-    """
     try:
         file_id = str(uuid.uuid4())
-        chunk_size = 650 * 1024  # নিরাপদ চাঙ্ক সাইজ (~650 KB)
+        chunk_size = 650 * 1024
         total_chunks = math.ceil(len(file_bytes) / chunk_size)
         
-        # ফাইল ইনফো সেভ
         meta_ref = db.collection('stored_files').document(file_id)
         meta_ref.set({
             'file_name': file_name,
@@ -48,47 +43,35 @@ def save_file_direct(file_bytes, folder_name, file_name):
             'size': len(file_bytes)
         })
         
-        # ডাটা চাঙ্ক সেভ
         for i in range(total_chunks):
             chunk_data = file_bytes[i * chunk_size : (i + 1) * chunk_size]
             chunk_ref = meta_ref.collection('chunks').document(str(i))
-            chunk_ref.set({
-                'data': chunk_data,
-                'index': i
-            })
+            chunk_ref.set({'data': chunk_data, 'index': i})
             
         return f"db::{file_id}", None
     except Exception as e:
         return None, f"Save failed: {str(e)}"
 
-def upload_character_file(file_bytes, file_name):
-    return save_file_direct(file_bytes, "characters", file_name)
-
-def upload_item_file(file_bytes, file_name):
-    return save_file_direct(file_bytes, "items", file_name)
-
 def download_file_bytes(saved_path):
-    """ডাটাবেস থেকে ফাইল জোড়া লাগিয়ে ফেরত দেয়"""
     try:
-        if saved_path.startswith("db::"):
-            file_id = saved_path.replace("db::", "")
-            meta_ref = db.collection('stored_files').document(file_id)
-            meta = meta_ref.get().to_dict()
-            if not meta:
-                return None
-            
-            total_chunks = meta['total_chunks']
-            chunks = []
-            for i in range(total_chunks):
-                doc = meta_ref.collection('chunks').document(str(i)).get()
-                if doc.exists:
-                    chunks.append(doc.to_dict()['data'])
-            return b"".join(chunks)
+        if not saved_path or not saved_path.startswith("db::"):
+            return None
+        file_id = saved_path.replace("db::", "")
+        meta_ref = db.collection('stored_files').document(file_id)
+        meta = meta_ref.get().to_dict()
+        if not meta:
+            return None
+        
+        total_chunks = meta['total_chunks']
+        chunks = []
+        for i in range(total_chunks):
+            doc = meta_ref.collection('chunks').document(str(i)).get()
+            if doc.exists:
+                chunks.append(doc.to_dict()['data'])
+        return b"".join(chunks)
     except Exception as e:
-        print(f"Read error: {e}")
-    return None
+        return None
 
-# ==================== ক্যারেক্টার ও আইটেম ম্যানেজমেন্ট ====================
 def add_character(name, description, file_path, components_config):
     try:
         doc_ref = db.collection('characters').document()
@@ -103,18 +86,18 @@ def add_character(name, description, file_path, components_config):
     except Exception as e:
         return False
 
-def add_item(name, category, file_path, d_id, n_id, s_id, mesh_id):
+def add_item_files(name, category, model_path, tex_d_path, tex_n_path, tex_s_path):
+    """আইটেমের থ্রিডি মডেল এবং D, N, S ছবির পাথ ডাটাবেসে সেভ করে"""
     try:
         doc_ref = db.collection('items').document()
         doc_ref.set({
             'id': doc_ref.id,
             'name': name,
             'category': category,
-            'file_path': file_path,
-            'd_id': str(d_id).strip(),
-            'n_id': str(n_id).strip(),
-            's_id': str(s_id).strip(),
-            'mesh_id': str(mesh_id).strip()
+            'model_path': model_path,
+            'tex_d_path': tex_d_path,
+            'tex_n_path': tex_n_path,
+            'tex_s_path': tex_s_path
         })
         return True
     except Exception as e:
