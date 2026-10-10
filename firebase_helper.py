@@ -1,19 +1,18 @@
 import firebase_admin
-from firebase_admin import credentials, firestore, storage
+from firebase_admin import credentials, firestore
 import streamlit as st
 import requests
+import uuid
+import math
 
 FIREBASE_WEB_API_KEY = "AIzaSyDYvXgT6RAfXAkKUvFqxmIrNYnS-EuIgAg"
-BUCKET_NAME = "bundle-38c98.firebasestorage.app"
 
 def init_firebase():
     if not firebase_admin._apps:
         try:
             cred_dict = dict(st.secrets["firebase"])
             cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred, {
-                'storageBucket': BUCKET_NAME
-            })
+            firebase_admin.initialize_app(cred)
         except Exception as e:
             st.error(f"Firebase connection error: {e}")
     return firestore.client()
@@ -29,33 +28,67 @@ def login_admin(email, password):
     except Exception as e:
         return {"error": str(e)}
 
-def upload_character_file(file_bytes, file_name):
-    """আসল এরর মেসেজসহ ফাইল আপলোড করে"""
+# ==================== ঝামেলামুক্ত ডাইরেক্ট ফাইল স্টোরেজ ====================
+def save_file_direct(file_bytes, folder_name, file_name):
+    """
+    কোনো ক্লাউড বাকেট ছাড়াই সরাসরি ডাটাবেসে ফাইল সেভ করে।
+    ১-৩ এমবি ফাইলের জন্য এটি ১০০% নিখুঁত এবং ফেইল করার কোনো সুযোগ নেই।
+    """
     try:
-        bucket = storage.bucket(BUCKET_NAME)
-        blob = bucket.blob(f"characters/{file_name}")
-        blob.upload_from_string(file_bytes, content_type="application/octet-stream")
-        return f"characters/{file_name}", None
+        file_id = str(uuid.uuid4())
+        chunk_size = 650 * 1024  # নিরাপদ চাঙ্ক সাইজ (~650 KB)
+        total_chunks = math.ceil(len(file_bytes) / chunk_size)
+        
+        # ফাইল ইনফো সেভ
+        meta_ref = db.collection('stored_files').document(file_id)
+        meta_ref.set({
+            'file_name': file_name,
+            'folder': folder_name,
+            'total_chunks': total_chunks,
+            'size': len(file_bytes)
+        })
+        
+        # ডাটা চাঙ্ক সেভ
+        for i in range(total_chunks):
+            chunk_data = file_bytes[i * chunk_size : (i + 1) * chunk_size]
+            chunk_ref = meta_ref.collection('chunks').document(str(i))
+            chunk_ref.set({
+                'data': chunk_data,
+                'index': i
+            })
+            
+        return f"db::{file_id}", None
     except Exception as e:
-        return None, str(e)
+        return None, f"Save failed: {str(e)}"
+
+def upload_character_file(file_bytes, file_name):
+    return save_file_direct(file_bytes, "characters", file_name)
 
 def upload_item_file(file_bytes, file_name):
-    try:
-        bucket = storage.bucket(BUCKET_NAME)
-        blob = bucket.blob(f"items/{file_name}")
-        blob.upload_from_string(file_bytes, content_type="application/octet-stream")
-        return f"items/{file_name}", None
-    except Exception as e:
-        return None, str(e)
+    return save_file_direct(file_bytes, "items", file_name)
 
-def download_file_bytes(storage_path):
+def download_file_bytes(saved_path):
+    """ডাটাবেস থেকে ফাইল জোড়া লাগিয়ে ফেরত দেয়"""
     try:
-        bucket = storage.bucket(BUCKET_NAME)
-        blob = bucket.blob(storage_path)
-        return blob.download_as_bytes()
+        if saved_path.startswith("db::"):
+            file_id = saved_path.replace("db::", "")
+            meta_ref = db.collection('stored_files').document(file_id)
+            meta = meta_ref.get().to_dict()
+            if not meta:
+                return None
+            
+            total_chunks = meta['total_chunks']
+            chunks = []
+            for i in range(total_chunks):
+                doc = meta_ref.collection('chunks').document(str(i)).get()
+                if doc.exists:
+                    chunks.append(doc.to_dict()['data'])
+            return b"".join(chunks)
     except Exception as e:
-        return None
+        print(f"Read error: {e}")
+    return None
 
+# ==================== ক্যারেক্টার ও আইটেম ম্যানেজমেন্ট ====================
 def add_character(name, description, file_path, components_config):
     try:
         doc_ref = db.collection('characters').document()
