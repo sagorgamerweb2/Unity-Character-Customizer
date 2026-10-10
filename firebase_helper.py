@@ -4,6 +4,7 @@ import streamlit as st
 import requests
 
 FIREBASE_WEB_API_KEY = "AIzaSyDYvXgT6RAfXAkKUvFqxmIrNYnS-EuIgAg"
+BUCKET_NAME = "bundle-38c98.firebasestorage.app"
 
 def init_firebase():
     if not firebase_admin._apps:
@@ -11,7 +12,7 @@ def init_firebase():
             cred_dict = dict(st.secrets["firebase"])
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred, {
-                'storageBucket': 'bundle-38c98.firebasestorage.app'
+                'storageBucket': BUCKET_NAME
             })
         except Exception as e:
             st.error(f"Firebase connection error: {e}")
@@ -29,27 +30,27 @@ def login_admin(email, password):
         return {"error": str(e)}
 
 def upload_character_file(file_bytes, file_name):
+    """আসল এরর মেসেজসহ ফাইল আপলোড করে"""
     try:
-        bucket = storage.bucket()
+        bucket = storage.bucket(BUCKET_NAME)
         blob = bucket.blob(f"characters/{file_name}")
-        blob.upload_from_string(file_bytes)
-        return f"characters/{file_name}"
+        blob.upload_from_string(file_bytes, content_type="application/octet-stream")
+        return f"characters/{file_name}", None
     except Exception as e:
-        return None
+        return None, str(e)
 
 def upload_item_file(file_bytes, file_name):
     try:
-        bucket = storage.bucket()
+        bucket = storage.bucket(BUCKET_NAME)
         blob = bucket.blob(f"items/{file_name}")
-        blob.upload_from_string(file_bytes)
-        return f"items/{file_name}"
+        blob.upload_from_string(file_bytes, content_type="application/octet-stream")
+        return f"items/{file_name}", None
     except Exception as e:
-        return None
+        return None, str(e)
 
 def download_file_bytes(storage_path):
-    """স্টোরেজ থেকে প্রসেসিংয়ের জন্য ফাইল বাইট ডাউনলোড করে"""
     try:
-        bucket = storage.bucket()
+        bucket = storage.bucket(BUCKET_NAME)
         blob = bucket.blob(storage_path)
         return blob.download_as_bytes()
     except Exception as e:
