@@ -55,7 +55,9 @@ elif page == "Admin Panel":
         
         char_name = st.text_input("Character Name")
         char_desc = st.text_area("Character Description (Optional)")
-        uploaded_file = st.file_uploader("Upload Base AssetBundle", type=["bundle", "unity3d", ""])
+        
+        # এখানে Error ছিল, যা এখন ঠিক করে দেওয়া হয়েছে
+        uploaded_file = st.file_uploader("Upload Base AssetBundle")
         
         if st.button("Upload & Save Character"):
             if char_name and uploaded_file:
