@@ -1,238 +1,153 @@
+import base64
+
 import streamlit as st
-import firebase_helper
-import processing
+import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Unity Character Customizer", page_icon="🎮", layout="wide")
+import admin
+import firebase_helper as fb
+import processing as proc
+from config import CATEGORIES
 
-CATEGORIES = ["Hair", "Head", "Accessory", "Body / Top", "Bottom", "Shoes"]
+st.set_page_config(page_title="Character Customizer", page_icon="🎮", layout="centered",
+                   initial_sidebar_state="collapsed")
+st.markdown("<style>.block-container{padding-top:1.2rem}</style>", unsafe_allow_html=True)
 
-if "admin_logged_in" not in st.session_state:
-    st.session_state.admin_logged_in = False
+try:
+    fb.get_db()
+except Exception as e:
+    st.error("❌ Firebase সংযোগ হয়নি। Streamlit → Settings → Secrets ঠিক আছে কিনা দেখুন।")
+    st.code(str(e))
+    st.stop()
 
-st.sidebar.title("Navigation")
-page = st.sidebar.radio("Go to:", ["Public Customizer", "Admin Panel"])
 
-# ==================== পাবলিক পেজ ====================
-if page == "Public Customizer":
-    st.title("🎮 Character Customizer")
-    st.info("আপনার পছন্দের অংশগুলো পরিবর্তন করুন। সিলেক্ট না করলে তা অরিজিনাল থাকবে।")
-    
-    characters = firebase_helper.get_all_characters()
-    all_items = firebase_helper.get_all_items()
+def auto_download(data: bytes, filename: str):
+    if len(data) > 30 * 1024 * 1024:
+        return  # খুব বড় ফাইলে শুধু বাটন
+    b64 = base64.b64encode(data).decode()
+    components.html(
+        f'<a id="d" download="{filename}" href="data:application/octet-stream;base64,{b64}"></a>'
+        '<script>document.getElementById("d").click();</script>',
+        height=0,
+    )
 
-    if not characters:
-        st.warning("এখনো কোনো ক্যারেক্টার যোগ করা হয়নি।")
-    else:
-        st.subheader("1. Choose Base Character")
-        char_names = [c["name"] for c in characters]
-        selected_char_name = st.selectbox("Select Character:", char_names)
-        selected_char = next(c for c in characters if c["name"] == selected_char_name)
 
-        st.markdown("---")
-        st.subheader("2. Select Components to Modify (Optional)")
-
-        selected_items_for_job = {}
-        cols = st.columns(2)
-        for idx, cat in enumerate(CATEGORIES):
-            cat_items = [itm for itm in all_items if itm.get("category") == cat]
-            options = ["Original (No Change)"] + [itm["name"] for itm in cat_items]
-            
-            with cols[idx % 2]:
-                chosen_opt = st.selectbox(f"🔘 {cat}:", options, key=f"sel_{cat}")
-                if chosen_opt != "Original (No Change)":
-                    item_obj = next(itm for itm in cat_items if itm["name"] == chosen_opt)
-                    selected_items_for_job[cat] = item_obj
-
-        st.markdown("---")
-        if st.button("🚀 Create Bundle", type="primary", use_container_width=True):
-            if not selected_items_for_job:
-                st.warning("আপনি কোনো আইটেম সিলেক্ট করেননি! বান্ডেলটি ১০০% অরিজিনাল থাকবে।")
-            else:
-                with st.spinner("প্রসেসিং হচ্ছে... দয়া করে অপেক্ষা করুন।"):
-                    base_bytes = firebase_helper.download_file_bytes(selected_char["file_path"])
-                    if not base_bytes:
-                        st.error("মূল ক্যারেক্টার ফাইলটি লোড করতে সমস্যা হচ্ছে।")
-                    else:
-                        items_to_apply = {}
-                        for cat, itm in selected_items_for_job.items():
-                            items_to_apply[cat] = {
-                                "data": itm,
-                                "model_bytes": firebase_helper.download_file_bytes(itm.get("model_path")),
-                                "tex_d_bytes": firebase_helper.download_file_bytes(itm.get("tex_d_path")),
-                                "tex_n_bytes": firebase_helper.download_file_bytes(itm.get("tex_n_path")),
-                                "tex_s_bytes": firebase_helper.download_file_bytes(itm.get("tex_s_path"))
-                            }
-                        
-                        success, result_bytes, logs = processing.process_character_bundle(base_bytes, selected_char, items_to_apply)
-                        
-                        if success and result_bytes:
-                            st.success("🎉 সফলভাবে কাস্টমাইজড বান্ডেল তৈরি হয়েছে!")
-                            st.download_button(
-                                label=f"⬇️ Download {selected_char_name}_Custom.bundle",
-                                data=result_bytes,
-                                file_name=f"{selected_char_name}_Custom.bundle",
-                                mime="application/octet-stream",
-                                use_container_width=True
-                            )
-                        else:
-                            st.error("বান্ডেল তৈরিতে সমস্যা হয়েছে।")
-                            for l in logs: st.write(l)
-
-# ==================== অ্যাডমিন প্যানেল ====================
-elif page == "Admin Panel":
-    st.title("🔒 Admin Panel")
-    
-    if not st.session_state.admin_logged_in:
-        st.subheader("Admin Login")
-        with st.form("login_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Login")
-            if submitted:
-                res = firebase_helper.login_admin(email, password)
-                if "idToken" in res:
-                    st.session_state.admin_logged_in = True
+def page_public():
+    chars, items = fb.list_characters(), fb.list_items()
+    if not chars:
+        st.info("এখনো কোনো ক্যারেক্টার যোগ করা হয়নি। অ্যাডমিন প্যানেল থেকে যোগ করুন।")
+        return
+    char = next((c for c in chars if c["id"] == st.session_state.get("sel_char")), None)
+    if char is None:
+        st.title("🎮 ক্যারেক্টার বেছে নিন")
+        for c in chars:
+            with st.container(border=True):
+                st.subheader(c.get("name", "?"))
+                if c.get("desc"):
+                    st.caption(c["desc"])
+                if st.button("এই ক্যারেক্টার নিন →", key=f"pick_{c['id']}", use_container_width=True):
+                    st.session_state.sel_char = c["id"]
+                    st.session_state.pop("build", None)
+                    st.session_state.pop("final", None)
                     st.rerun()
-                else:
-                    st.error("Login failed.")
-    else:
-        col1, col2 = st.columns([8, 2])
-        col1.success("আপনি সফলভাবে লগইন করেছেন!")
-        if col2.button("Logout"):
-            st.session_state.admin_logged_in = False
-            st.rerun()
-        
-        tab1, tab2 = st.tabs(["👤 Characters", "📦 Items"])
-        
-        # ----------------- Characters Tab -----------------
-        with tab1:
-            with st.expander("➕ Add New Character", expanded=False):
-                with st.form("add_char_form", clear_on_submit=True):
-                    c_name = st.text_input("Character Name")
-                    c_desc = st.text_area("Description")
-                    c_file = st.file_uploader("Upload Base AssetBundle")
-                    
-                    st.write("Target Path IDs:")
-                    c_cfg = {}
-                    for cat in CATEGORIES:
-                        st.markdown(f"**{cat}**")
-                        c1, c2, c3, c4 = st.columns(4)
-                        m_id = c1.text_input("Mesh ID", value="0", key=f"am_{cat}")
-                        d_id = c2.text_input("Tex D ID", value="0", key=f"ad_{cat}")
-                        n_id = c3.text_input("Tex N ID", value="0", key=f"an_{cat}")
-                        s_id = c4.text_input("Tex S ID", value="0", key=f"as_{cat}")
-                        c_cfg[cat] = {"mesh_id": m_id.strip(), "d_id": d_id.strip(), "n_id": n_id.strip(), "s_id": s_id.strip()}
-                    
-                    if st.form_submit_button("Save Character"):
-                        if c_name and c_file:
-                            path, err = firebase_helper.save_file_direct(c_file.read(), "characters", c_file.name)
-                            if path and firebase_helper.add_character(c_name, c_desc, path, c_cfg):
-                                st.success("Character added!")
-                                st.rerun()
-                            else: st.error("Failed to save.")
-                        else: st.warning("Name and File required.")
+        return
+    customize(char, items)
 
-            st.markdown("### Manage Characters")
-            chars = firebase_helper.get_all_characters()
-            for c in chars:
-                with st.expander(f"👤 {c.get('name', 'Unknown')}"):
-                    c_id = c['doc_id']
-                    
-                    # Edit & Delete Buttons
-                    col_a, col_b = st.columns(2)
-                    if col_a.button("✏️ Edit", key=f"edt_c_{c_id}"):
-                        st.session_state[f"edit_mode_{c_id}"] = True
-                    if col_b.button("🗑️ Delete", key=f"del_c_{c_id}"):
-                        firebase_helper.delete_character(c_id)
-                        st.rerun()
 
-                    # Edit Form
-                    if st.session_state.get(f"edit_mode_{c_id}", False):
-                        st.warning("আপনি এডিট মোডে আছেন। সেভ করতে নিচের Save Changes-এ চাপুন।")
-                        with st.form(f"form_c_{c_id}"):
-                            e_name = st.text_input("Name", value=c.get('name', ''))
-                            e_desc = st.text_area("Description", value=c.get('description', ''))
-                            e_file = st.file_uploader("Replace Bundle File (Optional)")
-                            
-                            e_cfg = {}
-                            c_comp = c.get('components', {})
-                            for cat in CATEGORIES:
-                                cat_vals = c_comp.get(cat, {})
-                                st.markdown(f"**{cat}**")
-                                c1, c2, c3, c4 = st.columns(4)
-                                m = c1.text_input("Mesh ID", value=cat_vals.get("mesh_id", "0"), key=f"em_{cat}_{c_id}")
-                                d = c2.text_input("Tex D", value=cat_vals.get("d_id", "0"), key=f"ed_{cat}_{c_id}")
-                                n = c3.text_input("Tex N", value=cat_vals.get("n_id", "0"), key=f"en_{cat}_{c_id}")
-                                s = c4.text_input("Tex S", value=cat_vals.get("s_id", "0"), key=f"es_{cat}_{c_id}")
-                                e_cfg[cat] = {"mesh_id": m.strip(), "d_id": d.strip(), "n_id": n.strip(), "s_id": s.strip()}
-                            
-                            if st.form_submit_button("💾 Save Changes"):
-                                r_path = None
-                                if e_file: r_path, _ = firebase_helper.save_file_direct(e_file.read(), "characters", e_file.name)
-                                firebase_helper.update_character(c_id, e_name, e_desc, e_cfg, r_path)
-                                st.session_state[f"edit_mode_{c_id}"] = False
-                                st.rerun()
-                            if st.form_submit_button("Cancel"):
-                                st.session_state[f"edit_mode_{c_id}"] = False
-                                st.rerun()
+def customize(char, items):
+    if st.button("← অন্য ক্যারেক্টার"):
+        for k in ("sel_char", "build", "final"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    st.title(f"👤 {char.get('name', '')}")
+    st.caption("যে অংশ বদলাতে চান সেটা সিলেক্ট করুন। না করলে অরিজিনাল থাকবে।")
 
-        # ----------------- Items Tab -----------------
-        with tab2:
-            with st.expander("➕ Add New Item", expanded=False):
-                with st.form("add_item_form", clear_on_submit=True):
-                    i_name = st.text_input("Item Name")
-                    i_cat = st.selectbox("Category", CATEGORIES)
-                    i_mod = st.file_uploader("3D Model File")
-                    i_d = st.file_uploader("Texture D (Main Image)", type=["png", "jpg"])
-                    i_n = st.file_uploader("Texture N (Normal)", type=["png", "jpg"])
-                    i_s = st.file_uploader("Texture S (Specular)", type=["png", "jpg"])
-                    
-                    if st.form_submit_button("Save Item"):
-                        if i_name and (i_mod or i_d):
-                            mp, dp, np, sp = None, None, None, None
-                            if i_mod: mp, _ = firebase_helper.save_file_direct(i_mod.read(), "items", i_mod.name)
-                            if i_d: dp, _ = firebase_helper.save_file_direct(i_d.read(), "items", i_d.name)
-                            if i_n: np, _ = firebase_helper.save_file_direct(i_n.read(), "items", i_n.name)
-                            if i_s: sp, _ = firebase_helper.save_file_direct(i_s.read(), "items", i_s.name)
-                            
-                            if firebase_helper.add_item_files(i_name, i_cat, mp, dp, np, sp):
-                                st.success("Item saved!")
-                                st.rerun()
-                        else: st.warning("Name and at least a model or Texture D required.")
+    ids_all = char.get("ids", {})
+    picks = {}
+    for key, label in CATEGORIES:
+        ids = ids_all.get(key, {})
+        if not any(ids.get(k) for k in ("mesh", "d", "n", "s")):
+            continue
+        cat_items = {i["id"]: i for i in items if i.get("category") == key}
+        if not cat_items:
+            st.caption(f"{label}: কোনো আইটেম নেই")
+            continue
+        choice = st.selectbox(label, [None] + list(cat_items),
+                              format_func=lambda x, ci=cat_items: "— অরিজিনাল —" if x is None else ci[x]["name"],
+                              key=f"pick_{char['id']}_{key}")
+        if choice:
+            picks[key] = cat_items[choice]
+            if cat_items[choice].get("thumb"):
+                st.image(cat_items[choice]["thumb"], width=90)
 
-            st.markdown("### Manage Items")
-            items = firebase_helper.get_all_items()
-            for itm in items:
-                with st.expander(f"📦 {itm.get('name', 'Unknown')} [{itm.get('category', '')}]"):
-                    i_id = itm['doc_id']
-                    
-                    c_a, c_b = st.columns(2)
-                    if c_a.button("✏️ Edit", key=f"edt_i_{i_id}"):
-                        st.session_state[f"edit_item_{i_id}"] = True
-                    if c_b.button("🗑️ Delete", key=f"del_i_{i_id}"):
-                        firebase_helper.delete_item(i_id)
-                        st.rerun()
-                    
-                    if st.session_state.get(f"edit_item_{i_id}", False):
-                        st.warning("এডিট মোড চালু আছে।")
-                        with st.form(f"form_i_{i_id}"):
-                            ei_name = st.text_input("Name", value=itm.get('name', ''))
-                            ei_cat = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(itm.get('category', CATEGORIES[0])))
-                            ei_mod = st.file_uploader("Replace Model (Optional)")
-                            ei_d = st.file_uploader("Replace Texture D (Optional)", type=["png", "jpg"])
-                            ei_n = st.file_uploader("Replace Texture N (Optional)", type=["png", "jpg"])
-                            ei_s = st.file_uploader("Replace Texture S (Optional)", type=["png", "jpg"])
-                            
-                            if st.form_submit_button("💾 Save Item"):
-                                n_m, n_d, n_nn, n_s = None, None, None, None
-                                if ei_mod: n_m, _ = firebase_helper.save_file_direct(ei_mod.read(), "items", ei_mod.name)
-                                if ei_d: n_d, _ = firebase_helper.save_file_direct(ei_d.read(), "items", ei_d.name)
-                                if ei_n: n_nn, _ = firebase_helper.save_file_direct(ei_n.read(), "items", ei_n.name)
-                                if ei_s: n_s, _ = firebase_helper.save_file_direct(ei_s.read(), "items", ei_s.name)
-                                
-                                firebase_helper.update_item_files(i_id, ei_name, ei_cat, n_m, n_d, n_nn, n_s)
-                                st.session_state[f"edit_item_{i_id}"] = False
-                                st.rerun()
-                            if st.form_submit_button("Cancel"):
-                                st.session_state[f"edit_item_{i_id}"] = False
-                                st.rerun()
+    sig = tuple(sorted((k, v["id"]) for k, v in picks.items()))
+    st.markdown("---")
+    if st.button("📦 ধাপ ১+২: বান্ডেল তৈরি করুন", type="primary", disabled=not picks, use_container_width=True):
+        run_build(char, picks, sig)
+
+    b = st.session_state.get("build")
+    if b and b["char"] == char["id"] and b["sig"] == sig:
+        step3(char, sig, b)
+
+
+def run_build(char, picks, sig):
+    st.session_state.pop("final", None)
+    st.session_state.pop("build", None)
+    with st.status("প্রসেসিং চলছে…", expanded=True) as status:
+        def log(m):
+            st.write(m)
+        try:
+            base = fb.load_file(char.get("file_id"))
+            if not base:
+                raise proc.ProcessingError("বেস ক্যারেক্টার ফাইল পাওয়া যায়নি")
+            mesh_blobs, tex_blobs = {}, {}
+            log("ফাইল ডাউনলোড হচ্ছে…")
+            for cat, it in picks.items():
+                mesh_blobs[cat] = fb.load_file(it.get("mesh_file"))
+                tex_blobs[cat] = {s: fb.load_file(it.get(f"{s}_file")) for s in ("d", "n", "s")}
+            ids = char.get("ids", {})
+            log("**ধাপ ১: 3D Mesh ইমপোর্ট**")
+            s1, done = proc.stage1_meshes(base, ids, picks, mesh_blobs, log)
+            log("**ধাপ ২: Texture ইমপোর্ট**")
+            s2 = proc.stage2_textures(s1, ids, picks, tex_blobs, done, True, log)
+            st.session_state.build = {"char": char["id"], "sig": sig, "bytes": s2}
+            status.update(label="✅ ধাপ ১+২ সম্পন্ন", state="complete")
+        except Exception as e:
+            status.update(label="❌ ব্যর্থ", state="error")
+            st.error(str(e))
+
+
+def step3(char, sig, b):
+    st.success("ধাপ ১+২ সম্পন্ন ✅")
+    st.markdown("### ধাপ ৩ — অরিজিনাল ফাইল দিয়ে সাইজ মেলানো")
+    orig = st.file_uploader("অরিজিনাল asset bundle আপলোড করুন", key="orig_up")
+    if orig and st.button("🚀 ফাইনাল ফাইল বানান ও ডাউনলোড", type="primary", use_container_width=True):
+        with st.status("কম্প্রেস ও সাইজ মেলানো হচ্ছে…", expanded=True) as status:
+            try:
+                data, info = proc.build_final(b["bytes"], orig.getvalue(), st.write)
+                st.session_state.final = {"char": char["id"], "sig": sig, "bytes": data, "name": orig.name,
+                                          "info": info, "auto": True}
+                status.update(label="✅ তৈরি হয়েছে", state="complete")
+            except Exception as e:
+                status.update(label="❌ ব্যর্থ", state="error")
+                st.error(str(e))
+    f = st.session_state.get("final")
+    if f and f["char"] == char["id"] and f["sig"] == sig:
+        info = f["info"]
+        msg = {"padded": "শেষে 00 বাইট যোগ করে অরিজিনালের সমান করা হয়েছে ✅",
+               "exact": "সাইজ হুবহু মিলেছে ✅",
+               "trimmed": "শেষের অতিরিক্ত 00 বাইট ছেঁটে সাইজ মেলানো হয়েছে ✅",
+               "over": "⚠️ ফাইল অরিজিনালের চেয়ে বড় হয়ে গেছে — সাইজ মেলানো যায়নি। ছোট/কম রেজোলিউশনের ছবি দিয়ে চেষ্টা করুন।"}[info["status"]]
+        (st.warning if info["status"] == "over" else st.success)(
+            f"{msg}\n\nফাইনাল: {info['size']:,} বাইট | অরিজিনাল: {info['target']:,} বাইট")
+        st.download_button(f"⬇️ {f['name']} ডাউনলোড", f["bytes"], file_name=f["name"],
+                           mime="application/octet-stream", use_container_width=True)
+        if f.get("auto"):
+            f["auto"] = False
+            auto_download(f["bytes"], f["name"])
+
+
+mode = st.radio("মেনু", ["🏠 হোম", "🔐 অ্যাডমিন"], horizontal=True, label_visibility="collapsed")
+if mode == "🏠 হোম":
+    page_public()
+else:
+    admin.render()

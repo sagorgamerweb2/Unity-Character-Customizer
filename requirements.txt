@@ -1,3 +1,4 @@
-streamlit==1.40.0
-firebase-admin==6.5.0
-UnityPy
+streamlit>=1.40
+firebase-admin>=6.5
+UnityPy>=1.20
+Pillow

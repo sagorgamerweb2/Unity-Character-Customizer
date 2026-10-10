@@ -1,169 +1,200 @@
-import firebase_admin
-from firebase_admin import credentials, firestore
-import streamlit as st
-import requests
+"""Firebase Firestore ডাটাবেস (সম্পূর্ণ ফ্রি Spark প্ল্যানে চলে — Storage লাগে না)।
+বড় ফাইল zlib দিয়ে ছোট করে ৮০০KB-এর টুকরো করে Firestore-এ রাখা হয়।
+"""
+import io
+import json
+import time
 import uuid
-import math
+import zlib
 
-FIREBASE_WEB_API_KEY = "AIzaSyDYvXgT6RAfXAkKUvFqxmIrNYnS-EuIgAg"
+import firebase_admin
+import streamlit as st
+from firebase_admin import credentials, firestore
+from PIL import Image
 
-def init_firebase():
+COL_FILES, COL_CHARS, COL_ITEMS = "ucc_files", "ucc_characters", "ucc_items"
+CHUNK = 800_000
+BATCH_CHUNKS = 6
+
+
+def _credentials_info():
+    try:
+        if "FIREBASE_JSON" in st.secrets:
+            raw = st.secrets["FIREBASE_JSON"]
+            info = json.loads(raw, strict=False) if isinstance(raw, str) else dict(raw)
+        elif "firebase" in st.secrets:
+            info = dict(st.secrets["firebase"])
+        else:
+            raise RuntimeError("Secrets-এ FIREBASE_JSON পাওয়া যায়নি।")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"FIREBASE_JSON ঠিকমতো পেস্ট হয়নি: {e}") from e
+    pk = info.get("private_key", "")
+    if "\\n" in pk:
+        info["private_key"] = pk.replace("\\n", "\n")
+    return info
+
+
+@st.cache_resource(show_spinner=False)
+def get_db():
     if not firebase_admin._apps:
-        try:
-            cred_dict = dict(st.secrets["firebase"])
-            cred = credentials.Certificate(cred_dict)
-            firebase_admin.initialize_app(cred)
-        except Exception as e:
-            st.error(f"Firebase error: {e}")
+        firebase_admin.initialize_app(credentials.Certificate(_credentials_info()))
     return firestore.client()
 
-db = init_firebase()
 
-def login_admin(email, password):
-    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_WEB_API_KEY}"
-    payload = {"email": email, "password": password, "returnSecureToken": True}
+# ------------------------------------------------------------------ files
+def save_file(data: bytes, name: str = "file") -> str:
+    db = get_db()
+    fid = uuid.uuid4().hex
+    comp = zlib.compress(data, 6)
+    parts = [comp[i:i + CHUNK] for i in range(0, len(comp), CHUNK)] or [b""]
+    ref = db.collection(COL_FILES).document(fid)
     try:
-        r = requests.post(url, json=payload)
-        return r.json()
-    except Exception as e:
-        return {"error": str(e)}
-
-# ==================== ফাইল ম্যানেজমেন্ট ====================
-def save_file_direct(file_bytes, folder_name, file_name):
-    try:
-        file_id = str(uuid.uuid4())
-        chunk_size = 650 * 1024
-        total_chunks = math.ceil(len(file_bytes) / chunk_size)
-        
-        meta_ref = db.collection('stored_files').document(file_id)
-        meta_ref.set({'file_name': file_name, 'folder': folder_name, 'total_chunks': total_chunks, 'size': len(file_bytes)})
-        
-        for i in range(total_chunks):
-            chunk_ref = meta_ref.collection('chunks').document(str(i))
-            chunk_ref.set({'data': file_bytes[i * chunk_size : (i + 1) * chunk_size], 'index': i})
-            
-        return f"db::{file_id}", None
-    except Exception as e:
-        return None, str(e)
-
-def download_file_bytes(saved_path):
-    try:
-        if not saved_path or not saved_path.startswith("db::"): return None
-        file_id = saved_path.replace("db::", "")
-        meta = db.collection('stored_files').document(file_id).get().to_dict()
-        if not meta: return None
-        
-        chunks = []
-        for i in range(meta['total_chunks']):
-            doc = db.collection('stored_files').document(file_id).collection('chunks').document(str(i)).get()
-            if doc.exists: chunks.append(doc.to_dict()['data'])
-        return b"".join(chunks)
+        for s in range(0, len(parts), BATCH_CHUNKS):
+            b = db.batch()
+            for i in range(s, min(s + BATCH_CHUNKS, len(parts))):
+                b.set(ref.collection("chunks").document(f"{i:05d}"), {"i": i, "data": parts[i]})
+            b.commit()
+        ref.set({"name": name, "size": len(data), "chunks": len(parts), "created": time.time()})
     except Exception:
-        return None
+        _delete_chunks(ref)
+        raise
+    return fid
 
-def delete_file_direct(saved_path):
+
+@st.cache_data(max_entries=40, show_spinner=False)
+def load_file(file_id):
+    if not file_id:
+        return None
+    ref = get_db().collection(COL_FILES).document(file_id)
+    snap = ref.get()
+    if not snap.exists:
+        return None
+    info = snap.to_dict()
+    docs = sorted((d.to_dict() for d in ref.collection("chunks").stream()), key=lambda d: d["i"])
+    if len(docs) != info["chunks"]:
+        raise RuntimeError(f"ফাইল অসম্পূর্ণ ({len(docs)}/{info['chunks']} টুকরো)")
+    return zlib.decompress(b"".join(d["data"] for d in docs))
+
+
+def _delete_chunks(ref):
+    batch, n = get_db().batch(), 0
+    for d in ref.collection("chunks").stream():
+        batch.delete(d.reference)
+        n += 1
+        if n % 400 == 0:
+            batch.commit()
+            batch = get_db().batch()
+    batch.commit()
+
+
+def delete_file(file_id):
+    if not file_id:
+        return
     try:
-        if not saved_path or not saved_path.startswith("db::"): return
-        file_id = saved_path.replace("db::", "")
-        meta_ref = db.collection('stored_files').document(file_id)
-        meta = meta_ref.get().to_dict()
-        if meta:
-            for i in range(meta.get('total_chunks', 0)):
-                meta_ref.collection('chunks').document(str(i)).delete()
-            meta_ref.delete()
+        ref = get_db().collection(COL_FILES).document(file_id)
+        _delete_chunks(ref)
+        ref.delete()
+        load_file.clear()
     except Exception:
         pass
 
-# ==================== ক্যারেক্টার CRUD ====================
-def add_character(name, description, file_path, components_config):
-    try:
-        db.collection('characters').add({
-            'name': name, 'description': description, 'file_path': file_path, 'components': components_config
-        })
-        return True
-    except: return False
 
-def update_character(doc_id, name, description, components_config, new_file_path=None):
+def make_thumb(img_bytes, size=160):
     try:
-        doc_ref = db.collection('characters').document(doc_id)
-        data = {'name': name, 'description': description, 'components': components_config}
-        if new_file_path:
-            old = doc_ref.get().to_dict()
-            if old and old.get('file_path'): delete_file_direct(old['file_path'])
-            data['file_path'] = new_file_path
-        doc_ref.update(data)
-        return True
-    except: return False
+        img = Image.open(io.BytesIO(img_bytes))
+        img.load()
+        img = img.convert("RGB")
+        img.thumbnail((size, size))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=80)
+        return out.getvalue()
+    except Exception:
+        return None
 
-def delete_character(doc_id):
-    try:
-        doc_ref = db.collection('characters').document(doc_id)
-        old = doc_ref.get().to_dict()
-        if old and old.get('file_path'): delete_file_direct(old['file_path'])
-        doc_ref.delete()
-        return True
-    except: return False
 
-# ==================== আইটেম CRUD ====================
-def add_item_files(name, category, model_path, tex_d_path, tex_n_path, tex_s_path):
-    try:
-        db.collection('items').add({
-            'name': name, 'category': category, 'model_path': model_path, 'tex_d_path': tex_d_path, 'tex_n_path': tex_n_path, 'tex_s_path': tex_s_path
-        })
-        return True
-    except: return False
+# ------------------------------------------------------------------ characters
+@st.cache_data(ttl=300, show_spinner=False)
+def list_characters():
+    out = []
+    for d in get_db().collection(COL_CHARS).stream():
+        x = d.to_dict() or {}
+        x["id"] = d.id
+        out.append(x)
+    out.sort(key=lambda c: (c.get("name") or "").lower())
+    return out
 
-def update_item_files(doc_id, name, category, new_model=None, new_d=None, new_n=None, new_s=None):
-    try:
-        doc_ref = db.collection('items').document(doc_id)
-        old = doc_ref.get().to_dict() or {}
-        data = {'name': name, 'category': category}
-        
-        if new_model:
-            if old.get('model_path'): delete_file_direct(old['model_path'])
-            data['model_path'] = new_model
-        if new_d:
-            if old.get('tex_d_path'): delete_file_direct(old['tex_d_path'])
-            data['tex_d_path'] = new_d
-        if new_n:
-            if old.get('tex_n_path'): delete_file_direct(old['tex_n_path'])
-            data['tex_n_path'] = new_n
-        if new_s:
-            if old.get('tex_s_path'): delete_file_direct(old['tex_s_path'])
-            data['tex_s_path'] = new_s
 
-        doc_ref.update(data)
-        return True
-    except: return False
+def add_character(name, desc, file_id, ids):
+    get_db().collection(COL_CHARS).add(
+        {"name": name, "desc": desc, "file_id": file_id, "ids": ids, "created": time.time()}
+    )
+    list_characters.clear()
 
-def delete_item(doc_id):
-    try:
-        doc_ref = db.collection('items').document(doc_id)
-        old = doc_ref.get().to_dict()
-        if old:
-            for k in ['model_path', 'tex_d_path', 'tex_n_path', 'tex_s_path']:
-                if old.get(k): delete_file_direct(old[k])
-        doc_ref.delete()
-        return True
-    except: return False
 
-# ==================== ডাটা রিডিং (গ্যারান্টিড আইডি সহ) ====================
-def get_all_characters():
-    chars = []
-    try:
-        for doc in db.collection('characters').stream():
-            data = doc.to_dict()
-            data['doc_id'] = doc.id  # আসল ফায়ারবেস আইডি
-            chars.append(data)
-    except: pass
-    return chars
+def update_character(cid, name, desc, ids, new_file_id=None):
+    ref = get_db().collection(COL_CHARS).document(cid)
+    data = {"name": name, "desc": desc, "ids": ids}
+    old_file = None
+    if new_file_id:
+        old_file = (ref.get().to_dict() or {}).get("file_id")
+        data["file_id"] = new_file_id
+    ref.update(data)
+    if old_file:
+        delete_file(old_file)
+    list_characters.clear()
 
-def get_all_items():
-    items = []
-    try:
-        for doc in db.collection('items').stream():
-            data = doc.to_dict()
-            data['doc_id'] = doc.id  # আসল ফায়ারবেস আইডি
-            items.append(data)
-    except: pass
-    return items
+
+def delete_character(cid):
+    ref = get_db().collection(COL_CHARS).document(cid)
+    old = ref.get().to_dict() or {}
+    ref.delete()
+    delete_file(old.get("file_id"))
+    list_characters.clear()
+
+
+# ------------------------------------------------------------------ items
+FILE_KEYS = ("mesh_file", "d_file", "n_file", "s_file")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def list_items():
+    out = []
+    for d in get_db().collection(COL_ITEMS).stream():
+        x = d.to_dict() or {}
+        x["id"] = d.id
+        out.append(x)
+    out.sort(key=lambda c: (c.get("name") or "").lower())
+    return out
+
+
+def add_item(name, category, files: dict, thumb):
+    data = {"name": name, "category": category, "thumb": thumb, "created": time.time()}
+    for k in FILE_KEYS:
+        data[k] = files.get(k)
+    get_db().collection(COL_ITEMS).add(data)
+    list_items.clear()
+
+
+def update_item(iid, name, category, new_files: dict, new_thumb=None):
+    ref = get_db().collection(COL_ITEMS).document(iid)
+    old = ref.get().to_dict() or {}
+    data = {"name": name, "category": category}
+    for k, v in new_files.items():
+        if v:
+            data[k] = v
+    if new_thumb:
+        data["thumb"] = new_thumb
+    ref.update(data)
+    for k, v in new_files.items():
+        if v and old.get(k):
+            delete_file(old[k])
+    list_items.clear()
+
+
+def delete_item(iid):
+    ref = get_db().collection(COL_ITEMS).document(iid)
+    old = ref.get().to_dict() or {}
+    ref.delete()
+    for k in FILE_KEYS:
+        delete_file(old.get(k))
+    list_items.clear()
