@@ -5,7 +5,7 @@ import re
 
 _ARR = re.compile(r"^\d+\s+Array\s+Array\s+\(\d+\s+items?\)")
 _IDX = re.compile(r"^\[(\d+)\]$")
-_HEAD = re.compile(r"^\s*\d+\s+Mesh\s+Base\b", re.M)
+_HEAD = re.compile(r"^\s*\d+\s+(?:Mesh|MonoBehaviour)\s+Base\b", re.M)
 
 
 class _Node:
@@ -111,8 +111,8 @@ def parse_uabe_dump(text: str) -> dict:
     if not root.kids:
         raise ValueError("ডাম্প ফাঁকা")
     tree = _conv(root.kids[0])
-    if not isinstance(tree, dict) or not ({"m_SubMeshes", "m_VertexData", "m_Name"} & set(tree)):
-        raise ValueError("এটি Mesh ডাম্প বলে মনে হচ্ছে না")
+    if not isinstance(tree, dict) or not tree:
+        raise ValueError("ডাম্প থেকে কোনো ফিল্ড পড়া যায়নি")
     return tree
 
 

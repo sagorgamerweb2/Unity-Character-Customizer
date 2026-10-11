@@ -11,7 +11,7 @@ CAT_LABEL = dict(CATEGORIES)
 
 # mesh = 3D মডেল, d/n/s = Texture2D ছবি (Diffuse / Normal / Specular)
 SLOTS = [
-    ("mesh", "3D Mesh Path ID"),
+    ("mesh", "3D মডেল Path ID (Mesh/MonoBehaviour)"),
     ("d", "Texture D Path ID"),
     ("n", "Texture N Path ID"),
     ("s", "Texture S Path ID"),

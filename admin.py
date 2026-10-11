@@ -145,7 +145,7 @@ def tab_items():
         with st.form("add_item"):
             name = st.text_input("আইটেমের নাম")
             cat = st.selectbox("ক্যাটাগরি", [k for k, _ in CATEGORIES], format_func=lambda k: CAT_LABEL[k])
-            mesh = st.file_uploader("3D Mesh ডাম্প ফাইল (Raw .dat সবচেয়ে নিরাপদ)", key="ai_mesh")
+            mesh = st.file_uploader("3D মডেল ডাম্প ফাইল (UABE Export Raw .dat সবচেয়ে নিরাপদ)", key="ai_mesh")
             d = st.file_uploader("Texture D (ছবি)", type=IMG_TYPES, key="ai_d")
             n = st.file_uploader("Texture N (ছবি)", type=IMG_TYPES, key="ai_n")
             s = st.file_uploader("Texture S (ছবি)", type=IMG_TYPES, key="ai_s")

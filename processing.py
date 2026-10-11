@@ -7,7 +7,8 @@ from PIL import Image
 
 from mesh_dump import deep_merge, looks_like_text_dump, parse_uabe_dump
 
-EXPECT = {"mesh": "Mesh", "d": "Texture2D", "n": "Texture2D", "s": "Texture2D"}
+MESH_TYPES = ("Mesh", "MonoBehaviour")  # এই গেমে 3D মডেল MonoBehaviour-এর ভিতরে থাকে
+EXPECT = {"mesh": MESH_TYPES, "d": ("Texture2D",), "n": ("Texture2D",), "s": ("Texture2D",)}
 
 
 class ProcessingError(Exception):
@@ -70,12 +71,17 @@ def inspect_bundle(data):
     rows = []
     for o in env.objects:
         t = o.type.name
-        if t not in ("Mesh", "Texture2D"):
+        if t not in ("Mesh", "MonoBehaviour", "Texture2D"):
             continue
         name, info = "", ""
         try:
             d = o.read()
             name = getattr(d, "m_Name", "") or ""
+            if t == "MonoBehaviour" and not name:
+                try:
+                    name = o.peek_name() or ""
+                except Exception:
+                    pass
             if t == "Texture2D":
                 fmt = getattr(d.m_TextureFormat, "name", d.m_TextureFormat)
                 info = f"{d.m_Width}x{d.m_Height} {fmt}"
@@ -98,8 +104,8 @@ def validate_ids(data, ids):
             o = idx.get(pid)
             if o is None:
                 problems.append(f"{cat}/{slot}: Path ID {pid} বান্ডেলে নেই")
-            elif o.type.name != EXPECT[slot]:
-                problems.append(f"{cat}/{slot}: ID {pid} হলো {o.type.name}, কিন্তু {EXPECT[slot]} দরকার")
+            elif o.type.name not in EXPECT[slot]:
+                problems.append(f"{cat}/{slot}: ID {pid} হলো {o.type.name}, কিন্তু {' / '.join(EXPECT[slot])} দরকার")
     return problems
 
 
@@ -113,17 +119,23 @@ def _sniff(blob):
 
 
 def import_mesh(dst, blob, log):
+    """3D মডেল ডাম্প ইমপোর্ট। গন্তব্য Mesh বা MonoBehaviour — দুটোই চলে।"""
+    dtype = dst.type.name
     kind = _sniff(blob)
     if kind == "bundle":
         src_env = _load(blob)
-        src = next((o for o in src_env.objects if o.type.name == "Mesh"), None)
+        cands = [o for o in src_env.objects if o.type.name == dtype]
+        src = next((o for o in cands if o.path_id == dst.path_id), cands[0] if cands else None)
         if src is None:
-            raise ProcessingError("আপলোড করা বান্ডেলে কোনো Mesh নেই")
-        tree = src.read_typetree()
-        sd = tree.get("m_StreamData")
-        if isinstance(sd, dict) and sd.get("size"):
-            raise ProcessingError("এই Mesh-এর ডাটা বাইরের .resS ফাইলে আছে — Raw (.dat) ডাম্প ব্যবহার করুন")
-        dst.save_typetree(tree)
+            raise ProcessingError(f"আপলোড করা বান্ডেলে কোনো {dtype} নেই")
+        if dtype == "Mesh":
+            tree = src.read_typetree()
+            sd = tree.get("m_StreamData")
+            if isinstance(sd, dict) and sd.get("size"):
+                raise ProcessingError("এই Mesh-এর ডাটা বাইরের .resS ফাইলে আছে — Raw (.dat) ডাম্প ব্যবহার করুন")
+            dst.save_typetree(tree)
+        else:
+            dst.set_raw_data(src.get_raw_data())
     elif kind == "text":
         try:
             new = parse_uabe_dump(blob.decode("utf-8-sig", errors="replace"))
@@ -131,16 +143,17 @@ def import_mesh(dst, blob, log):
             dst.save_typetree(deep_merge(cur, new))
         except Exception as e:
             raise ProcessingError(
-                f"টেক্সট ডাম্প (.txt) পড়া যায়নি ({e}). অনুগ্রহ করে UABE থেকে 'Export Raw' (.dat) দিয়ে আবার চেষ্টা করুন।"
+                f"টেক্সট ডাম্প (.txt) ইমপোর্ট হয়নি ({e}). UABE থেকে 'Export Raw' (.dat) দিয়ে আবার চেষ্টা করুন।"
             ) from e
     else:
-        if len(blob) < 16:
-            raise ProcessingError("Mesh ফাইল খুব ছোট — ভুল ফাইল?")
-        n = struct.unpack("<I", blob[:4])[0]
-        if n > 512 or 4 + n > len(blob):
-            raise ProcessingError("Raw ফাইলটি সঠিক Mesh ডাম্প মনে হচ্ছে না")
+        if len(blob) < 12:
+            raise ProcessingError("ডাম্প ফাইল খুব ছোট — ভুল ফাইল?")
+        if dtype == "Mesh":
+            n = struct.unpack("<I", blob[:4])[0]
+            if n > 512 or 4 + n > len(blob):
+                raise ProcessingError("Raw ফাইলটি সঠিক Mesh ডাম্প মনে হচ্ছে না")
         dst.set_raw_data(blob)
-    log(f"   • Mesh ইমপোর্ট ({kind})")
+    log(f"   • {dtype} ডাম্প ইমপোর্ট হয়েছে ({kind})")
 
 
 # ---------------------------------------------------------------- texture
@@ -190,8 +203,8 @@ def stage1_meshes(base_bytes, char_ids, picks, mesh_blobs, log):
             log(f"[{cat}] ক্যারেক্টারে Mesh Path ID দেওয়া নেই — বাদ")
             continue
         obj = idx.get(pid)
-        if obj is None or obj.type.name != "Mesh":
-            raise ProcessingError(f"[{cat}] Path ID {pid} বেস ফাইলে Mesh হিসেবে পাওয়া যায়নি")
+        if obj is None or obj.type.name not in MESH_TYPES:
+            raise ProcessingError(f"[{cat}] Path ID {pid} বেস ফাইলে Mesh/MonoBehaviour হিসেবে পাওয়া যায়নি")
         log(f"[{cat}] Mesh → {pid}")
         import_mesh(obj, blob, log)
         done.append((cat, pid))
@@ -204,9 +217,13 @@ def stage2_textures(stage1_bytes, char_ids, picks, tex_blobs, mesh_done, keep_si
     idx = _index(env)
     for cat, pid in mesh_done:  # ধাপ ১-এর Mesh ঠিকমতো পড়া যায় কিনা যাচাই
         try:
-            idx[pid].read()
+            o = idx[pid]
+            if o.type.name == "Mesh":
+                o.read()
+            elif not o.get_raw_data():
+                raise ValueError("ডাটা ফাঁকা")
         except Exception as e:
-            raise ProcessingError(f"[{cat}] ইমপোর্ট করা Mesh পড়া যাচ্ছে না — ডাম্প ফাইলটি সম্ভবত ভুল: {e}") from e
+            raise ProcessingError(f"[{cat}] ইমপোর্ট করা মডেল পড়া যাচ্ছে না — ডাম্প ফাইলটি সম্ভবত ভুল: {e}") from e
     for cat in picks:
         for slot in ("d", "n", "s"):
             blob = tex_blobs.get(cat, {}).get(slot)
