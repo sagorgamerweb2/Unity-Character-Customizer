@@ -34,6 +34,13 @@ def _load(data):
         raise ProcessingError(f"Unity ফাইল লোড করা যায়নি: {e}") from e
 
 
+def _set_raw(obj, data):
+    try:
+        obj.set_raw_data(data)
+    except AttributeError:  # পুরনো UnityPy
+        obj.assets_file._raw_objects[obj.path_id] = data
+
+
 def _index(env):
     return {str(o.path_id): o for o in env.objects}
 
@@ -135,7 +142,7 @@ def import_mesh(dst, blob, log):
                 raise ProcessingError("এই Mesh-এর ডাটা বাইরের .resS ফাইলে আছে — Raw (.dat) ডাম্প ব্যবহার করুন")
             dst.save_typetree(tree)
         else:
-            dst.set_raw_data(src.get_raw_data())
+            _set_raw(dst, src.get_raw_data())
     elif kind == "text":
         try:
             new = parse_uabe_dump(blob.decode("utf-8-sig", errors="replace"))
@@ -152,7 +159,7 @@ def import_mesh(dst, blob, log):
             n = struct.unpack("<I", blob[:4])[0]
             if n > 512 or 4 + n > len(blob):
                 raise ProcessingError("Raw ফাইলটি সঠিক Mesh ডাম্প মনে হচ্ছে না")
-        dst.set_raw_data(blob)
+        _set_raw(dst, blob)
     log(f"   • {dtype} ডাম্প ইমপোর্ট হয়েছে ({kind})")
 
 

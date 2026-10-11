@@ -1,12 +1,21 @@
 """অ্যাডমিন প্যানেল"""
 import hmac
 import time
+from contextlib import contextmanager
 
 import streamlit as st
 
 import firebase_helper as fb
 import processing as proc
 from config import CAT_LABEL, CATEGORIES, SLOTS
+
+@contextmanager
+def guard():
+    try:
+        yield
+    except Exception as e:
+        st.error(f"❌ সমস্যা হয়েছে: {e}")
+
 
 IMG_TYPES = ["png", "jpg", "jpeg", "webp"]
 
@@ -103,10 +112,11 @@ def tab_characters():
                         for p in problems:
                             st.write("• " + p)
                     else:
-                        with st.spinner("Firebase-এ সেভ হচ্ছে…"):
-                            fid = fb.save_file(data, f.name)
-                            fb.add_character(name.strip(), desc.strip(), fid, clean)
-                        st.success("✅ ক্যারেক্টার যোগ হয়েছে")
+                        with guard():
+                            with st.spinner("Firebase-এ সেভ হচ্ছে…"):
+                                fid = fb.save_file(data, f.name)
+                                fb.add_character(name.strip(), desc.strip(), fid, clean)
+                            st.success("✅ ক্যারেক্টার যোগ হয়েছে")
 
     st.markdown("### ক্যারেক্টার তালিকা")
     for ch in fb.list_characters():
@@ -130,9 +140,10 @@ def tab_characters():
                         problems = [str(e)]
                     if problems:
                         st.warning("সমস্যা: " + " | ".join(problems) + " — তবুও সেভ হচ্ছে।")
-                    new_fid = fb.save_file(nf.getvalue(), nf.name) if nf else None
-                    fb.update_character(cid, n.strip(), d.strip(), clean, new_fid)
-                    st.success("✅ সেভ হয়েছে (পেজ রিফ্রেশ করলে নতুন তথ্য দেখাবে)")
+                    with guard():
+                        new_fid = fb.save_file(nf.getvalue(), nf.name) if nf else None
+                        fb.update_character(cid, n.strip(), d.strip(), clean, new_fid)
+                        st.success("✅ সেভ হয়েছে (পেজ রিফ্রেশ করলে নতুন তথ্য দেখাবে)")
             if st.checkbox("মুছে ফেলার জন্য নিশ্চিত", key=f"dc_{cid}"):
                 if st.button("🗑️ ডিলিট করুন", key=f"dcb_{cid}"):
                     fb.delete_character(cid)
@@ -156,15 +167,16 @@ def tab_items():
             elif not (mesh or d or n or s):
                 st.error("অন্তত একটি ফাইল দিন")
             else:
-                with st.spinner("Firebase-এ আপলোড হচ্ছে…"):
-                    files = {
-                        k: (fb.save_file(u.getvalue(), u.name) if u else None)
-                        for k, u in (("mesh_file", mesh), ("d_file", d), ("n_file", n), ("s_file", s))
-                    }
-                    src = d or n or s
-                    thumb = fb.make_thumb(src.getvalue()) if src else None
-                    fb.add_item(name.strip(), cat, files, thumb)
-                st.success("✅ আইটেম যোগ হয়েছে")
+                with guard():
+                    with st.spinner("Firebase-এ আপলোড হচ্ছে…"):
+                        files = {
+                            k: (fb.save_file(u.getvalue(), u.name) if u else None)
+                            for k, u in (("mesh_file", mesh), ("d_file", d), ("n_file", n), ("s_file", s))
+                        }
+                        src = d or n or s
+                        thumb = fb.make_thumb(src.getvalue()) if src else None
+                        fb.add_item(name.strip(), cat, files, thumb)
+                    st.success("✅ আইটেম যোগ হয়েছে")
 
     st.markdown("### আইটেম তালিকা")
     flt = st.selectbox("ক্যাটাগরি ফিল্টার", ["all"] + [k for k, _ in CATEGORIES],
@@ -189,11 +201,12 @@ def tab_items():
                 s2 = st.file_uploader("Texture S বদলান (ঐচ্ছিক)", type=IMG_TYPES, key=f"es_{iid}")
                 sv = st.form_submit_button("💾 সেভ", use_container_width=True)
             if sv:
-                new = {k: (fb.save_file(u.getvalue(), u.name) if u else None)
-                       for k, u in (("mesh_file", m2), ("d_file", d2), ("n_file", n2), ("s_file", s2))}
-                src = d2
-                fb.update_item(iid, nn.strip(), cc, new, fb.make_thumb(src.getvalue()) if src else None)
-                st.success("✅ সেভ হয়েছে (রিফ্রেশ করলে দেখাবে)")
+                with guard():
+                    new = {k: (fb.save_file(u.getvalue(), u.name) if u else None)
+                           for k, u in (("mesh_file", m2), ("d_file", d2), ("n_file", n2), ("s_file", s2))}
+                    src = d2
+                    fb.update_item(iid, nn.strip(), cc, new, fb.make_thumb(src.getvalue()) if src else None)
+                    st.success("✅ সেভ হয়েছে (রিফ্রেশ করলে দেখাবে)")
             if st.checkbox("মুছে ফেলার জন্য নিশ্চিত", key=f"di_{iid}"):
                 if st.button("🗑️ ডিলিট করুন", key=f"dib_{iid}"):
                     fb.delete_item(iid)

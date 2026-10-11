@@ -8,6 +8,9 @@ import firebase_helper as fb
 import processing as proc
 from config import CATEGORIES
 
+IMG_TYPES = ["png", "jpg", "jpeg", "webp"]
+UPLOAD = "__upload__"
+
 st.set_page_config(page_title="Character Customizer", page_icon="🎮", layout="centered",
                    initial_sidebar_state="collapsed")
 st.markdown("<style>.block-container{padding-top:1.2rem}</style>", unsafe_allow_html=True)
@@ -68,18 +71,31 @@ def customize(char, items):
         if not any(ids.get(k) for k in ("mesh", "d", "n", "s")):
             continue
         cat_items = {i["id"]: i for i in items if i.get("category") == key}
-        if not cat_items:
-            st.caption(f"{label}: কোনো আইটেম নেই")
-            continue
-        choice = st.selectbox(label, [None] + list(cat_items),
-                              format_func=lambda x, ci=cat_items: "— অরিজিনাল —" if x is None else ci[x]["name"],
-                              key=f"pick_{char['id']}_{key}")
-        if choice:
-            picks[key] = cat_items[choice]
-            if cat_items[choice].get("thumb"):
-                st.image(cat_items[choice]["thumb"], width=90)
+        choice = st.selectbox(
+            label, [None] + list(cat_items) + [UPLOAD],
+            format_func=lambda x, ci=cat_items: "— অরিজিনাল —" if x is None
+            else "📱 ফোন থেকে সরাসরি আপলোড" if x == UPLOAD else ci[x]["name"],
+            key=f"pick_{char['id']}_{key}")
+        if choice == UPLOAD:
+            kp = f"up_{char['id']}_{key}"
+            m = st.file_uploader("3D মডেল ডাম্প ফাইল (.dat)", key=f"{kp}_mesh")
+            d = st.file_uploader("Texture D (ছবি)", type=IMG_TYPES, key=f"{kp}_d")
+            n = st.file_uploader("Texture N (ছবি)", type=IMG_TYPES, key=f"{kp}_n")
+            s_ = st.file_uploader("Texture S (ছবি)", type=IMG_TYPES, key=f"{kp}_s")
+            up = {k: u for k, u in (("mesh", m), ("d", d), ("n", n), ("s", s_)) if u}
+            if up:
+                picks[key] = {
+                    "sig": ("up",) + tuple((k, u.name, u.size) for k, u in sorted(up.items())),
+                    "up": {k: u.getvalue() for k, u in up.items()},
+                    "item": None,
+                }
+        elif choice:
+            it = cat_items[choice]
+            picks[key] = {"sig": ("db", choice), "up": None, "item": it}
+            if it.get("thumb"):
+                st.image(it["thumb"], width=90)
 
-    sig = tuple(sorted((k, v["id"]) for k, v in picks.items()))
+    sig = tuple(sorted((k, v["sig"]) for k, v in picks.items()))
     st.markdown("---")
     if st.button("📦 ধাপ ১+২: বান্ডেল তৈরি করুন", type="primary", disabled=not picks, use_container_width=True):
         run_build(char, picks, sig)
@@ -101,9 +117,14 @@ def run_build(char, picks, sig):
                 raise proc.ProcessingError("বেস ক্যারেক্টার ফাইল পাওয়া যায়নি")
             mesh_blobs, tex_blobs = {}, {}
             log("ফাইল ডাউনলোড হচ্ছে…")
-            for cat, it in picks.items():
-                mesh_blobs[cat] = fb.load_file(it.get("mesh_file"))
-                tex_blobs[cat] = {s: fb.load_file(it.get(f"{s}_file")) for s in ("d", "n", "s")}
+            for cat, pk in picks.items():
+                if pk["up"]:  # ফোন থেকে আপলোড করা ফাইল
+                    mesh_blobs[cat] = pk["up"].get("mesh")
+                    tex_blobs[cat] = {s: pk["up"].get(s) for s in ("d", "n", "s")}
+                else:  # Firebase আইটেম
+                    it = pk["item"]
+                    mesh_blobs[cat] = fb.load_file(it.get("mesh_file"))
+                    tex_blobs[cat] = {s: fb.load_file(it.get(f"{s}_file")) for s in ("d", "n", "s")}
             ids = char.get("ids", {})
             log("**ধাপ ১: 3D Mesh ইমপোর্ট**")
             s1, done = proc.stage1_meshes(base, ids, picks, mesh_blobs, log)

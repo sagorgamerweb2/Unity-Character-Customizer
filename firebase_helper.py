@@ -61,7 +61,7 @@ def save_file(data: bytes, name: str = "file") -> str:
     return fid
 
 
-@st.cache_data(max_entries=40, show_spinner=False)
+@st.cache_data(max_entries=8, ttl=1800, show_spinner=False)
 def load_file(file_id):
     if not file_id:
         return None
