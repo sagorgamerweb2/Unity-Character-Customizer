@@ -52,17 +52,19 @@ def login_gate() -> bool:
 
 
 def ids_inputs(prefix, current=None):
+    """৬ ক্যাটাগরির Path ID ইনপুট (এক্সপান্ডার ছাড়া, যাতে নেস্টিং এরর না হয়)"""
     current = current or {}
     out = {}
     for key, label in CATEGORIES:
         cur = current.get(key, {})
-        with st.expander(label):
-            vals = {}
-            for row in (SLOTS[:2], SLOTS[2:]):
-                cols = st.columns(2)
-                for col, (slot, slabel) in zip(cols, row):
-                    vals[slot] = col.text_input(slabel, value=cur.get(slot, ""), key=f"{prefix}_{key}_{slot}")
-            out[key] = vals
+        st.markdown(f"**{label}**")
+        vals = {}
+        for row in (SLOTS[:2], SLOTS[2:]):
+            cols = st.columns(2)
+            for col, (slot, slabel) in zip(cols, row):
+                vals[slot] = col.text_input(slabel, value=cur.get(slot, ""), key=f"{prefix}_{key}_{slot}")
+        out[key] = vals
+        st.divider()
     return out
 
 
