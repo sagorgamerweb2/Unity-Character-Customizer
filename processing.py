@@ -194,6 +194,59 @@ def import_texture(obj, img_bytes, keep_size, log):
             raise ProcessingError(f"Texture ইমপোর্ট ব্যর্থ: {e2}") from e2
 
 
+# ---------------------------------------------------------------- custom edit
+def object_types(data):
+    """{path_id: টাইপ} — কাস্টম এডিট পেজে ID যাচাইয়ের জন্য"""
+    return {str(o.path_id): o.type.name for o in _load(data).objects}
+
+
+def _is_image(blob):
+    return blob[:4] == b"\x89PNG" or blob[:2] == b"\xff\xd8" or blob[:4] == b"RIFF" or blob[:2] == b"BM"
+
+
+def custom_stage1(base_bytes, edits, log):
+    """edits = [(path_id, blob)] — Mesh/MonoBehaviour গুলো আগে বসায়।"""
+    env = _load(base_bytes)
+    idx = _index(env)
+    done = []
+    for pid, blob in edits:
+        obj = idx.get(pid)
+        if obj is None:
+            raise ProcessingError(f"Path ID {pid} বান্ডেলে নেই")
+        if obj.type.name in MESH_TYPES:
+            if _is_image(blob):
+                raise ProcessingError(f"Path ID {pid} একটি {obj.type.name} — এখানে ছবি নয়, ডাম্প ফাইল দিন")
+            log(f"{obj.type.name} → {pid}")
+            import_mesh(obj, blob, log)
+            done.append(pid)
+        elif obj.type.name != "Texture2D":
+            raise ProcessingError(f"Path ID {pid} এর টাইপ {obj.type.name} — এটি সাপোর্ট করা হয় না")
+    return _save(env, "none"), done
+
+
+def custom_stage2(stage1_bytes, edits, done, keep_size, log):
+    """Texture2D গুলো বসায়।"""
+    env = _load(stage1_bytes)
+    idx = _index(env)
+    for pid in done:
+        try:
+            o = idx[pid]
+            if o.type.name == "Mesh":
+                o.read()
+            elif not o.get_raw_data():
+                raise ValueError("ডাটা ফাঁকা")
+        except Exception as e:
+            raise ProcessingError(f"Path ID {pid}: ইমপোর্ট করা ডাটা পড়া যাচ্ছে না — ডাম্প ভুল হতে পারে: {e}") from e
+    for pid, blob in edits:
+        obj = idx.get(pid)
+        if obj is not None and obj.type.name == "Texture2D":
+            if not _is_image(blob):
+                raise ProcessingError(f"Path ID {pid} একটি Texture2D — এখানে ছবি (PNG/JPG) দিন")
+            log(f"Texture2D → {pid}")
+            import_texture(obj, blob, keep_size, log)
+    return _save(env, "none")
+
+
 # ---------------------------------------------------------------- stages
 def stage1_meshes(base_bytes, char_ids, picks, mesh_blobs, log):
     """ধাপ ১: 3D Mesh ইমপোর্ট। (bytes, [(cat, path_id)]) ফেরত দেয়।"""

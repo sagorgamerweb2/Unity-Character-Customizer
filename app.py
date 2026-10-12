@@ -1,9 +1,8 @@
-import base64
-
 import streamlit as st
-import streamlit.components.v1 as components
 
 import admin
+import custom
+import finish
 import firebase_helper as fb
 import processing as proc
 from config import CATEGORIES
@@ -21,17 +20,6 @@ except Exception as e:
     st.error("❌ Firebase সংযোগ হয়নি। Streamlit → Settings → Secrets ঠিক আছে কিনা দেখুন।")
     st.code(str(e))
     st.stop()
-
-
-def auto_download(data: bytes, filename: str):
-    if len(data) > 30 * 1024 * 1024:
-        return  # খুব বড় ফাইলে শুধু বাটন
-    b64 = base64.b64encode(data).decode()
-    components.html(
-        f'<a id="d" download="{filename}" href="data:application/octet-stream;base64,{b64}"></a>'
-        '<script>document.getElementById("d").click();</script>',
-        height=0,
-    )
 
 
 def page_public():
@@ -102,7 +90,7 @@ def customize(char, items):
 
     b = st.session_state.get("build")
     if b and b["char"] == char["id"] and b["sig"] == sig:
-        step3(char, sig, b)
+        finish.step3(char["id"], sig, b)
 
 
 def run_build(char, picks, sig):
@@ -137,38 +125,11 @@ def run_build(char, picks, sig):
             st.error(str(e))
 
 
-def step3(char, sig, b):
-    st.success("ধাপ ১+২ সম্পন্ন ✅")
-    st.markdown("### ধাপ ৩ — অরিজিনাল ফাইল দিয়ে সাইজ মেলানো")
-    orig = st.file_uploader("অরিজিনাল asset bundle আপলোড করুন", key="orig_up")
-    if orig and st.button("🚀 ফাইনাল ফাইল বানান ও ডাউনলোড", type="primary", use_container_width=True):
-        with st.status("কম্প্রেস ও সাইজ মেলানো হচ্ছে…", expanded=True) as status:
-            try:
-                data, info = proc.build_final(b["bytes"], orig.getvalue(), st.write)
-                st.session_state.final = {"char": char["id"], "sig": sig, "bytes": data, "name": orig.name,
-                                          "info": info, "auto": True}
-                status.update(label="✅ তৈরি হয়েছে", state="complete")
-            except Exception as e:
-                status.update(label="❌ ব্যর্থ", state="error")
-                st.error(str(e))
-    f = st.session_state.get("final")
-    if f and f["char"] == char["id"] and f["sig"] == sig:
-        info = f["info"]
-        msg = {"padded": "শেষে 00 বাইট যোগ করে অরিজিনালের সমান করা হয়েছে ✅",
-               "exact": "সাইজ হুবহু মিলেছে ✅",
-               "trimmed": "শেষের অতিরিক্ত 00 বাইট ছেঁটে সাইজ মেলানো হয়েছে ✅",
-               "over": "⚠️ ফাইল অরিজিনালের চেয়ে বড় হয়ে গেছে — সাইজ মেলানো যায়নি। ছোট/কম রেজোলিউশনের ছবি দিয়ে চেষ্টা করুন।"}[info["status"]]
-        (st.warning if info["status"] == "over" else st.success)(
-            f"{msg}\n\nফাইনাল: {info['size']:,} বাইট | অরিজিনাল: {info['target']:,} বাইট")
-        st.download_button(f"⬇️ {f['name']} ডাউনলোড", f["bytes"], file_name=f["name"],
-                           mime="application/octet-stream", use_container_width=True)
-        if f.get("auto"):
-            f["auto"] = False
-            auto_download(f["bytes"], f["name"])
-
-
-mode = st.radio("মেনু", ["🏠 হোম", "🔐 অ্যাডমিন"], horizontal=True, label_visibility="collapsed")
+mode = st.radio("মেনু", ["🏠 হোম", "🛠️ কাস্টম এডিট", "🔐 অ্যাডমিন"], horizontal=True,
+                label_visibility="collapsed")
 if mode == "🏠 হোম":
     page_public()
+elif mode == "🛠️ কাস্টম এডিট":
+    custom.render()
 else:
     admin.render()
